@@ -9,17 +9,16 @@ sys.path.append(str(SRC))
 import ex_part_b
 import ex_part_c
 import ex_part_d
+import ex_part_e
 
 
-def test_folded_light_curve():
+def test_consistency_check_uses_folded_light_curve():
     """
-    The best-fit period should be consistent with the dominant
-    periodogram peak, and when folding on that best-fit period,
-    the folded light curve should show a clear transit dip near phase 0.
+    The best-fit period should match the dominant periodogram peak
+    within tolerance, and the folded light curve should show a dip.
     """
     rng = np.random.default_rng(42)
 
-    # Synthetic transit signal
     t = np.linspace(0.0, 40.0, 3000)
 
     period_true = 3.2
@@ -39,19 +38,14 @@ def test_folded_light_curve():
     flux_obs = flux_true + rng.normal(0.0, sigma, size=len(t))
     flux_err = np.full_like(t, sigma)
 
-    # Part B: dominant periodogram peak
     freq, power, _ = ex_part_b.power_spectrum_from_flux(t, flux_obs)
-    peak_freqs, peak_periods, _ = ex_part_b.strongest_periods(freq, power, n_peaks=3)
 
-    dominant_period = peak_periods[np.argmin(np.abs(peak_periods - period_true))]
-
-    # Part D: fit near the dominant period
-    period_grid = np.linspace(dominant_period * 0.95, dominant_period * 1.05, 41)
+    period_grid = np.linspace(3.0, 3.4, 41)
     depth_grid = np.linspace(0.010, 0.025, 31)
     duration_grid = np.linspace(0.10, 0.30, 31)
     epoch_grid = np.linspace(0.4, 1.1, 41)
 
-    best_params, best_chi2 = ex_part_d.grid_search_box_fit(
+    best_params, _ = ex_part_d.grid_search_box_fit(
         t,
         flux_obs,
         flux_err,
@@ -61,27 +55,82 @@ def test_folded_light_curve():
         epoch_grid,
     )
 
-    best_fit_period = best_params["period"]
-    best_fit_epoch = best_params["epoch"]
+    result = ex_part_e.consistency_check_with_folded_curve(
+        t=t,
+        flux=flux_obs,
+        freq=freq,
+        power=power,
+        best_params=best_params,
+        strongest_periods_func=ex_part_b.strongest_periods,
+        fold_light_curve_func=ex_part_c.fold_light_curve,
+        rtol=0.05,
+    )
 
-    # Part E: fold the light curve on the best-fit period
+    assert result["consistent_period"]
+    assert result["has_dip"]
+    assert result["consistent"]
+
+
+def test_folded_transit_depth_positive_for_transit_signal():
+    """
+    Folded transit depth should be positive for a real transit-like dip.
+    """
+    t = np.linspace(0.0, 20.0, 2000)
+
+    period_true = 4.0
+    depth_true = 0.02
+    duration_true = 0.24
+    epoch_true = 0.5
+
+    flux = ex_part_d.box_transit_model(
+        t,
+        period_true,
+        depth_true,
+        duration_true,
+        epoch_true,
+    )
+
     phase, flux_fold = ex_part_c.fold_light_curve(
-        t - best_fit_epoch,
-        flux_obs,
-        best_fit_period,
+        t - epoch_true,
+        flux,
+        period_true,
         centered=True,
     )
 
-    # Transit window in folded phase
-    width_phase = best_params["duration"] / best_fit_period
-    in_transit = np.abs(phase) < (width_phase / 2.0)
-    out_of_transit = ~in_transit
+    width_phase = duration_true / period_true
+    depth = ex_part_e.folded_transit_depth(
+        phase,
+        flux_fold,
+        center=0.0,
+        width=width_phase,
+    )
 
-    mean_in = np.mean(flux_fold[in_transit])
-    mean_out = np.mean(flux_fold[out_of_transit])
+    assert depth > 0.0
 
-    # Check 1: folded curve has a real dip
-    assert mean_in < mean_out
 
-    # Check 2: best-fit period agrees with dominant periodogram peak
-    assert np.isclose(best_fit_period, dominant_period, rtol=0.05)
+def test_report_best_fit_returns_expected_number_of_lines():
+    """
+    Reporting helper should return the formatted parameter summary.
+    """
+    best_params = {
+        "period": 3.2,
+        "depth": 0.018,
+        "duration": 0.20,
+        "epoch": 0.75,
+    }
+
+    uncertainties = {
+        "period_std": 0.01,
+        "depth_std": 0.002,
+        "duration_std": 0.01,
+        "epoch_std": 0.02,
+    }
+
+    lines = ex_part_e.report_best_fit(best_params, uncertainties)
+
+    assert len(lines) == 5
+    assert "Best-fit transit parameters:" in lines[0]
+    assert "P" in lines[1]
+    assert "delta" in lines[2]
+    assert "tau" in lines[3]
+    assert "t0" in lines[4]

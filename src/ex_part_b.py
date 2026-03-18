@@ -17,11 +17,13 @@ def load_light_curve(filename="TESSA_lc.dat"):
     )
     return df
 
+
 def make_relative_time(df):
     df = df.copy()
     t0 = df["time"].iloc[0]
     df["t_rel"] = df["time"] - t0
     return df
+
 
 def normalize_flux(df):
     df = df.copy()
@@ -29,12 +31,14 @@ def normalize_flux(df):
     df["flux_norm"] = df["flux"] / med
     return df
 
+
 def detrend_linear(df):
     df = df.copy()
     coeffs = np.polyfit(df["t_rel"], df["flux_norm"], deg=1)
     trend = np.polyval(coeffs, df["t_rel"])
     df["flux_clean"] = df["flux_norm"] / trend
     return df
+
 
 def dft_manual(y):
     y = np.asarray(y, dtype=float)
@@ -48,6 +52,7 @@ def dft_manual(y):
         c[k] = s
 
     return c
+
 
 def power_spectrum_from_flux(t, y):
     """
@@ -67,6 +72,7 @@ def power_spectrum_from_flux(t, y):
 
     freq = np.arange(N) / (N * dt)
     return freq, power, c
+
 
 def strongest_periods(freq, power, n_peaks=5):
     """
@@ -88,6 +94,7 @@ def strongest_periods(freq, power, n_peaks=5):
     order = np.argsort(peak_freqs)
     return peak_freqs[order], peak_periods[order], peak_powers[order]
 
+
 def main():
     df = load_light_curve("TESSA_lc.dat")
     df = make_relative_time(df)
@@ -103,12 +110,13 @@ def main():
         print(f"frequency = {f:.6f} 1/day, period = {p:.6f} days, power = {pw:.6e}")
 
     plt.figure(figsize=(8, 4))
-    plt.plot(freq[1:len(freq)//2], power[1:len(freq)//2])
+    plt.plot(freq[1 : len(freq) // 2], power[1 : len(freq) // 2])
     plt.xlabel("Frequency (1/day)")
     plt.ylabel("Power |c_k|^2")
     plt.title("DFT Power Spectrum")
     plt.tight_layout()
     plt.show()
+
 
 if __name__ == "__main__":
     main()

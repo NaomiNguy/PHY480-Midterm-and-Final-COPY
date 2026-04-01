@@ -1,89 +1,64 @@
-from pathlib import Path
+from ex_part_a import (
+    load_light_curve,
+    make_relative_time,
+    normalize_flux,
+    detrend_linear,
+    moving_average,
+)
+
 import numpy as np
-import pandas as pd
 import matplotlib.pyplot as plt
 
-BASE_DIR = Path(__file__).resolve().parents[1]
-DATA_DIR = BASE_DIR / "data"
 
-def load_light_curve(filename="TESSA_lc.dat"):
-    path = DATA_DIR / filename
-    df = pd.read_csv(
-        path,
-        sep=r"\s+",
-        comment="#",
-        names=["time", "flux", "flux_err"],
-        header=None,
-    )
-    return df
-
-
-def make_relative_time(df):
-    df = df.copy()
-    t0 = df["time"].iloc[0]
-    df["t_rel"] = df["time"] - t0
-    return df
-
-
-def normalize_flux(df):
-    df = df.copy()
-    med = np.median(df["flux"])
-    df["flux_norm"] = df["flux"] / med
-    return df
-
-
-def detrend_linear(df):
-    df = df.copy()
-    coeffs = np.polyfit(df["t_rel"], df["flux_norm"], deg=1)
-    trend = np.polyval(coeffs, df["t_rel"])
-    df["flux_clean"] = df["flux_norm"] / trend
-    return df
-
-
-def dft_manual(y):
-    y = np.asarray(y, dtype=float)
-    N = len(y)
-    c = np.zeros(N, dtype=complex)
-
-    for k in range(N):
-        s = 0.0j
-        for n in range(N):
-            s += y[n] * np.exp(-2j * np.pi * k * n / N)
-        c[k] = s
-
-    return c
-
-
-def power_spectrum_from_flux(t, y):
+def dft_nonuniform(t, y, freqs):
     """
-    Use median cadence to define the frequency grid.
+    Fourier sum from scratch using actual sample times.
+    No np.fft is used.
     """
     t = np.asarray(t, dtype=float)
     y = np.asarray(y, dtype=float)
+    freqs = np.asarray(freqs, dtype=float)
 
-    # subtract mean so the DC component is reduced
+    coeffs = np.zeros(len(freqs), dtype=complex)
+
+    for k, f in enumerate(freqs):
+        total = 0.0j
+        for n in range(len(t)):
+            total += y[n] * np.exp(-2j * np.pi * f * t[n])
+        coeffs[k] = total
+
+    return coeffs
+
+
+def power_spectrum_from_flux(t, y, nfreq=None):
+    t = np.asarray(t, dtype=float)
+    y = np.asarray(y, dtype=float)
+
     y_centered = y - np.mean(y)
 
-    c = dft_manual(y_centered)
-    power = np.abs(c) ** 2
-
     dt = np.median(np.diff(t))
-    N = len(t)
+    T = t.max() - t.min()
 
-    freq = np.arange(N) / (N * dt)
-    return freq, power, c
+    if nfreq is None:
+        nfreq = len(t)
+
+    f_min = 1.0 / T
+    f_max = 0.5 / dt
+    freqs = np.linspace(f_min, f_max, nfreq)
+
+    coeffs = dft_nonuniform(t, y_centered, freqs)
+    power = np.abs(coeffs) ** 2
+
+    return freqs, power, coeffs
 
 
 def strongest_periods(freq, power, n_peaks=5):
-    """
-    Return strongest nonzero positive-frequency peaks.
-    Only uses frequencies up to the Nyquist limit.
-    """
-    N = len(freq)
-    half = N // 2
+    freq = np.asarray(freq)
+    power = np.asarray(power)
 
-    freq_pos = freq[1:half]
-    power_pos = power[1:half]
+    valid = freq > 0
+    freq_pos = freq[valid]
+    power_pos = power[valid]
 
     idx = np.argsort(power_pos)[::-1][:n_peaks]
 
@@ -91,8 +66,7 @@ def strongest_periods(freq, power, n_peaks=5):
     peak_powers = power_pos[idx]
     peak_periods = 1.0 / peak_freqs
 
-    order = np.argsort(peak_freqs)
-    return peak_freqs[order], peak_periods[order], peak_powers[order]
+    return peak_freqs, peak_periods, peak_powers
 
 
 def main():
@@ -101,8 +75,14 @@ def main():
     df = normalize_flux(df)
     df = detrend_linear(df)
 
-    freq, power, coeffs = power_spectrum_from_flux(df["t_rel"], df["flux_clean"])
+    # Downsample to keep manual Fourier sum runtime reasonable
+    df = df.iloc[::10].copy()
 
+    t = df["t_rel"].to_numpy()
+    flux = df["flux_clean"].to_numpy()
+    flux_smooth = moving_average(flux, window=9)
+
+    freq, power, _ = power_spectrum_from_flux(t, flux_smooth, nfreq=min(len(t), 800))
     peak_freqs, peak_periods, peak_powers = strongest_periods(freq, power, n_peaks=5)
 
     print("Top candidate periods:")
@@ -110,11 +90,12 @@ def main():
         print(f"frequency = {f:.6f} 1/day, period = {p:.6f} days, power = {pw:.6e}")
 
     plt.figure(figsize=(8, 4))
-    plt.plot(freq[1 : len(freq) // 2], power[1 : len(freq) // 2])
+    plt.plot(freq, power)
     plt.xlabel("Frequency (1/day)")
-    plt.ylabel("Power |c_k|^2")
-    plt.title("DFT Power Spectrum")
+    plt.ylabel("Power |c(f)|^2")
+    plt.title("Periodogram")
     plt.tight_layout()
+    plt.savefig("part_b_periodogram")
     plt.show()
 
 

@@ -1,94 +1,27 @@
+from ex_part_a import (
+    load_light_curve,
+    make_relative_time,
+    normalize_flux,
+    detrend_linear,
+    moving_average,
+)
+from ex_part_b import power_spectrum_from_flux, strongest_periods
+from ex_part_c import candidate_periods_from_dft, choose_best_period, fold_light_curve
+from ex_part_d import (
+    box_transit_model,
+    bootstrap_fit,
+)
+
 import numpy as np
 import matplotlib.pyplot as plt
 
-def dominant_period_from_periodogram(freq, power, strongest_periods_func):
-    """
-    Return the dominant nonzero period from the periodogram.
-    """
-    peak_freqs, peak_periods, peak_powers = strongest_periods_func(freq, power, n_peaks=1)
+
+def dominant_period_from_periodogram(freq, power):
+    _, peak_periods, _ = strongest_periods(freq, power, n_peaks=1)
     return peak_periods[0]
 
 
-def folded_transit_depth(phase, flux, center=0.0, width=0.1):
-    """
-    Measure the average transit depth in a folded light curve.
-
-    Returns
-    -------
-    depth : float
-        Mean out-of-transit flux minus mean in-transit flux.
-        Positive values indicate a dip.
-    """
-    phase = np.asarray(phase)
-    flux = np.asarray(flux)
-
-    in_transit = np.abs(phase - center) < (width / 2.0)
-    out_of_transit = ~in_transit
-
-    if np.sum(in_transit) < 3 or np.sum(out_of_transit) < 3:
-        return 0.0
-
-    mean_in = np.mean(flux[in_transit])
-    mean_out = np.mean(flux[out_of_transit])
-
-    return mean_out - mean_in
-
-
-def consistency_check_with_folded_curve(
-    t,
-    flux,
-    freq,
-    power,
-    best_params,
-    strongest_periods_func,
-    fold_light_curve_func,
-    rtol=0.05,
-):
-    """
-    Check that the best-fit period matches the dominant periodogram peak
-    and that the folded light curve shows a dip near phase 0.
-
-    Returns
-    -------
-    result : dict
-        Dictionary containing dominant period, best-fit period,
-        folded transit depth, and consistency boolean.
-    """
-    dominant_period = dominant_period_from_periodogram(
-        freq, power, strongest_periods_func
-    )
-
-    best_period = best_params["period"]
-    best_epoch = best_params["epoch"]
-    best_duration = best_params["duration"]
-
-    phase, flux_fold = fold_light_curve_func(
-        t - best_epoch,
-        flux,
-        best_period,
-        centered=True,
-    )
-
-    width_phase = best_duration / best_period
-    depth = folded_transit_depth(phase, flux_fold, center=0.0, width=width_phase)
-
-    consistent_period = np.isclose(best_period, dominant_period, rtol=rtol)
-    has_dip = depth > 0.0
-
-    return {
-        "dominant_period": dominant_period,
-        "best_period": best_period,
-        "folded_depth": depth,
-        "consistent_period": consistent_period,
-        "has_dip": has_dip,
-        "consistent": consistent_period and has_dip,
-    }
-
-
 def report_best_fit(best_params, uncertainties):
-    """
-    Return formatted strings for final reported parameters.
-    """
     lines = [
         "Best-fit transit parameters:",
         f"P     = {best_params['period']:.6f} ± {uncertainties['period_std']:.6f} days",
@@ -101,32 +34,26 @@ def report_best_fit(best_params, uncertainties):
 
 def plot_periodogram(freq, power, best_period=None):
     plt.figure(figsize=(8, 4))
-    plt.plot(freq[1:len(freq)//2], power[1:len(freq)//2])
+    plt.plot(freq, power)
     if best_period is not None:
         plt.axvline(1.0 / best_period, linestyle="--", label="Best-fit period")
         plt.legend()
     plt.xlabel("Frequency (1/day)")
-    plt.ylabel("Power |c_k|^2")
-    plt.title("DFT Periodogram")
+    plt.ylabel("Power |c(f)|^2")
+    plt.title("Periodogram")
     plt.tight_layout()
     plt.show()
 
 
-def plot_folded_light_curve_with_model(
-    t,
-    flux,
-    best_params,
-    fold_light_curve_func,
-    box_transit_model_func,
-):
-    phase, flux_fold = fold_light_curve_func(
+def plot_folded_light_curve_with_model(t, flux, best_params):
+    phase, flux_fold = fold_light_curve(
         t - best_params["epoch"],
         flux,
         best_params["period"],
         centered=True,
     )
 
-    model = box_transit_model_func(
+    model = box_transit_model(
         t,
         best_params["period"],
         best_params["depth"],
@@ -134,7 +61,7 @@ def plot_folded_light_curve_with_model(
         best_params["epoch"],
     )
 
-    phase_model, model_fold = fold_light_curve_func(
+    phase_model, model_fold = fold_light_curve(
         t - best_params["epoch"],
         model,
         best_params["period"],
@@ -149,17 +76,12 @@ def plot_folded_light_curve_with_model(
     plt.title("Folded Light Curve with Best-Fit Model")
     plt.legend()
     plt.tight_layout()
+    plt.savefig("part_e_best_fit_light_curve.png")
     plt.show()
 
 
-def plot_residuals(
-    t,
-    flux,
-    best_params,
-    fold_light_curve_func,
-    box_transit_model_func,
-):
-    model = box_transit_model_func(
+def plot_residuals(t, flux, best_params):
+    model = box_transit_model(
         t,
         best_params["period"],
         best_params["depth"],
@@ -168,7 +90,7 @@ def plot_residuals(
     )
     residuals = flux - model
 
-    phase, residuals_fold = fold_light_curve_func(
+    phase, residuals_fold = fold_light_curve(
         t - best_params["epoch"],
         residuals,
         best_params["period"],
@@ -182,4 +104,59 @@ def plot_residuals(
     plt.ylabel("Residual Flux")
     plt.title("Residuals After Model Subtraction")
     plt.tight_layout()
+    plt.savefig("part_e_residuals")
     plt.show()
+
+
+def main():
+    df = load_light_curve("TESSA_lc.dat")
+    df = make_relative_time(df)
+    df = normalize_flux(df)
+    df = detrend_linear(df)
+
+    df = df.iloc[::10].copy()
+
+    t = df["t_rel"].to_numpy()
+    flux = moving_average(df["flux_clean"].to_numpy(), window=9)
+    flux_err = df["flux_err"].to_numpy()
+
+    candidate_periods, freq, power = candidate_periods_from_dft(t, flux, n_peaks=5)
+    best_period, _, _ = choose_best_period(t, flux, candidate_periods, method="scatter")
+
+    depth_guess = max(1e-4, 1.0 - np.min(flux))
+    epoch_guess = t[np.argmin(flux)]
+    duration_guess = 0.1 * best_period
+
+    period_grid = np.linspace(best_period * 0.95, best_period * 1.05, 21)
+    depth_grid = np.linspace(max(1e-4, depth_guess * 0.5), depth_guess * 1.5, 21)
+    duration_grid = np.linspace(max(0.01, duration_guess * 0.5), duration_guess * 1.5, 21)
+    epoch_grid = np.linspace(epoch_guess - 0.5 * best_period, epoch_guess + 0.5 * best_period, 21)
+
+    best_params, _, uncertainties, _ = bootstrap_fit(
+        t,
+        flux,
+        flux_err,
+        period_grid,
+        depth_grid,
+        duration_grid,
+        epoch_grid,
+        n_boot=20,
+    )
+
+    for line in report_best_fit(best_params, uncertainties):
+        print(line)
+
+    dominant_period = dominant_period_from_periodogram(freq, power)
+    print(f"\nDominant periodogram period = {dominant_period:.6f} days")
+    print(
+        "Consistency check:",
+        np.isclose(best_params["period"], dominant_period, rtol=0.05)
+    )
+
+    plot_periodogram(freq, power, best_period=best_params["period"])
+    plot_folded_light_curve_with_model(t, flux, best_params)
+    plot_residuals(t, flux, best_params)
+
+
+if __name__ == "__main__":
+    main()

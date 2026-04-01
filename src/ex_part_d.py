@@ -1,68 +1,26 @@
-from pathlib import Path
+from ex_part_a import (
+    load_light_curve,
+    make_relative_time,
+    normalize_flux,
+    detrend_linear,
+    moving_average,
+)
+from ex_part_c import (
+    candidate_periods_from_dft,
+    choose_best_period,
+    fold_light_curve,
+    estimate_duration_from_slopes,
+)
+
 import numpy as np
-import pandas as pd
 import matplotlib.pyplot as plt
-
-BASE_DIR = Path(__file__).resolve().parents[1]
-DATA_DIR = BASE_DIR / "data"
-
-
-def load_light_curve(filename="TESSA_lc.dat"):
-    path = DATA_DIR / filename
-    df = pd.read_csv(
-        path,
-        sep=r"\s+",
-        comment="#",
-        names=["time", "flux", "flux_err"],
-        header=None,
-    )
-    return df
-
-
-def make_relative_time(df):
-    df = df.copy()
-    t0 = df["time"].iloc[0]
-    df["t_rel"] = df["time"] - t0
-    return df
-
-
-def normalize_flux(df):
-    df = df.copy()
-    med = np.median(df["flux"])
-    df["flux_norm"] = df["flux"] / med
-    return df
 
 
 def transit_phase(t, period, epoch):
-    """
-    Return centered phase in [-0.5, 0.5).
-    """
-    t = np.asarray(t, dtype=float)
     return (((t - epoch) / period + 0.5) % 1.0) - 0.5
 
 
 def box_transit_model(t, period, depth, duration, epoch):
-    """
-    Simple box transit model.
-
-    Parameters
-    ----------
-    t : array
-        Times.
-    period : float
-        Transit period.
-    depth : float
-        Transit depth.
-    duration : float
-        Transit duration in same time units as t.
-    epoch : float
-        Transit-center epoch.
-
-    Returns
-    -------
-    flux_model : array
-        Model flux values.
-    """
     t = np.asarray(t, dtype=float)
     phase = transit_phase(t, period, epoch)
 
@@ -86,10 +44,6 @@ def weighted_chi2(y_obs, y_model, yerr=None):
 
 
 def grid_search_box_fit(t, flux, flux_err, period_grid, depth_grid, duration_grid, epoch_grid):
-    """
-    Simple brute-force fit for a box transit model.
-    Returns best-fit parameters and chi^2.
-    """
     best_params = None
     best_chi2 = np.inf
 
@@ -120,12 +74,9 @@ def bootstrap_fit(
     depth_grid,
     duration_grid,
     epoch_grid,
-    n_boot=100,
+    n_boot=30,
     rng_seed=42,
 ):
-    """
-    Bootstrap uncertainties by resampling data points with replacement.
-    """
     rng = np.random.default_rng(rng_seed)
 
     best_params, best_chi2 = grid_search_box_fit(
@@ -161,64 +112,52 @@ def bootstrap_fit(
     return best_params, best_chi2, uncertainties, results
 
 
-def plot_folded_model(t, flux, best_params):
-    P = best_params["period"]
-    d = best_params["depth"]
-    tau = best_params["duration"]
-    t0 = best_params["epoch"]
-
-    phase = transit_phase(t, P, t0)
-    order = np.argsort(phase)
-
-    phase_sorted = phase[order]
-    flux_sorted = flux[order]
-    model_sorted = box_transit_model(t, P, d, tau, t0)[order]
-
-    plt.figure(figsize=(8, 4))
-    plt.scatter(phase_sorted, flux_sorted, s=6, label="Data")
-    plt.plot(phase_sorted, model_sorted, linewidth=2, label="Box model", color="red")
-    plt.xlabel("Phase")
-    plt.ylabel("Flux")
-    plt.title("Folded Light Curve with Best-Fit Transit Model")
-    plt.legend()
-    plt.tight_layout()
-    plt.show()
-
-
 def main():
     df = load_light_curve("TESSA_lc.dat")
     df = make_relative_time(df)
     df = normalize_flux(df)
+    df = detrend_linear(df)
+
+    df = df.iloc[::10].copy()
 
     t = df["t_rel"].to_numpy()
-    flux = df["flux_norm"].to_numpy()
+    flux = df["flux_clean"].to_numpy()
     flux_err = df["flux_err"].to_numpy()
+    flux_smooth = moving_average(flux, window=9)
 
-    # Example: center grids around your Part C best period
-    period_grid = np.linspace(2.9, 3.1, 21)
-    depth_grid = np.linspace(0.001, 0.03, 20)
-    duration_grid = np.linspace(0.05, 0.30, 20)
-    epoch_grid = np.linspace(0.0, 3.0, 30)
+    candidate_periods, freq, power = candidate_periods_from_dft(t, flux_smooth, n_peaks=5)
+    best_period, _, _ = choose_best_period(t, flux_smooth, candidate_periods, method="scatter")
 
-    best_params, best_chi2, uncertainties, boot = bootstrap_fit(
+    phase, flux_fold = fold_light_curve(t, flux_smooth, best_period, centered=True)
+    _, duration_guess, _, _, _, _ = estimate_duration_from_slopes(
+        phase, flux_fold, smooth_window=11, period=best_period
+    )
+
+    depth_guess = max(1e-4, 1.0 - np.min(flux_smooth))
+    epoch_guess = t[np.argmin(flux_smooth)]
+
+    period_grid = np.linspace(best_period * 0.95, best_period * 1.05, 21)
+    depth_grid = np.linspace(max(1e-4, depth_guess * 0.5), depth_guess * 1.5, 21)
+    duration_grid = np.linspace(max(0.01, duration_guess * 0.5), duration_guess * 1.5, 21)
+    epoch_grid = np.linspace(epoch_guess - 0.5 * best_period, epoch_guess + 0.5 * best_period, 21)
+
+    best_params, best_chi2, uncertainties, _ = bootstrap_fit(
         t,
-        flux,
+        flux_smooth,
         flux_err,
         period_grid,
         depth_grid,
         duration_grid,
         epoch_grid,
-        n_boot=100,
+        n_boot=20,
     )
 
-    print("Best-fit parameters:")
-    print(f"P     = {best_params['period']:.6f} ± {uncertainties['period_std']:.6f}")
+    print("Best-fit transit parameters:")
+    print(f"P     = {best_params['period']:.6f} ± {uncertainties['period_std']:.6f} days")
     print(f"delta = {best_params['depth']:.6f} ± {uncertainties['depth_std']:.6f}")
-    print(f"tau   = {best_params['duration']:.6f} ± {uncertainties['duration_std']:.6f}")
-    print(f"t0    = {best_params['epoch']:.6f} ± {uncertainties['epoch_std']:.6f}")
+    print(f"tau   = {best_params['duration']:.6f} ± {uncertainties['duration_std']:.6f} days")
+    print(f"t0    = {best_params['epoch']:.6f} ± {uncertainties['epoch_std']:.6f} days")
     print(f"chi^2 = {best_chi2:.6f}")
-
-    plot_folded_model(t, flux, best_params)
 
 
 if __name__ == "__main__":

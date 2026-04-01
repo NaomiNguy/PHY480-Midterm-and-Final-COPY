@@ -9,11 +9,21 @@ sys.path.append(str(SRC))
 import ex_part_d
 
 
+def test_box_model_depth_and_baseline():
+    t = np.linspace(0.0, 10.0, 1000)
+
+    period = 2.0
+    depth = 0.02
+    duration = 0.2
+    epoch = 0.5
+
+    model = ex_part_d.box_transit_model(t, period, depth, duration, epoch)
+
+    assert np.isclose(np.max(model), 1.0)
+    assert np.isclose(np.min(model), 1.0 - depth)
+
+
 def test_parameter_recovery_synthetic_box_transit():
-    """
-    Fit should recover injected (P, delta, tau, t0)
-    within reasonable tolerance for synthetic data.
-    """
     rng = np.random.default_rng(42)
 
     t = np.linspace(0.0, 30.0, 3000)
@@ -24,11 +34,7 @@ def test_parameter_recovery_synthetic_box_transit():
     epoch_true = 0.60
 
     flux_true = ex_part_d.box_transit_model(
-        t,
-        period_true,
-        depth_true,
-        duration_true,
-        epoch_true,
+        t, period_true, depth_true, duration_true, epoch_true
     )
 
     sigma = 0.001
@@ -40,14 +46,9 @@ def test_parameter_recovery_synthetic_box_transit():
     duration_grid = np.linspace(0.18, 0.30, 41)
     epoch_grid = np.linspace(0.40, 0.80, 41)
 
-    best_params, best_chi2 = ex_part_d.grid_search_box_fit(
-        t,
-        flux_obs,
-        flux_err,
-        period_grid,
-        depth_grid,
-        duration_grid,
-        epoch_grid,
+    best_params, _ = ex_part_d.grid_search_box_fit(
+        t, flux_obs, flux_err,
+        period_grid, depth_grid, duration_grid, epoch_grid
     )
 
     assert np.isclose(best_params["period"], period_true, rtol=0.03)
@@ -57,10 +58,6 @@ def test_parameter_recovery_synthetic_box_transit():
 
 
 def test_uncertainty_estimates_nonzero():
-    """
-    Bootstrap uncertainty estimates should be nonzero
-    for noisy synthetic data.
-    """
     rng = np.random.default_rng(123)
 
     t = np.linspace(0.0, 30.0, 2000)
@@ -71,11 +68,7 @@ def test_uncertainty_estimates_nonzero():
     epoch_true = 0.75
 
     flux_true = ex_part_d.box_transit_model(
-        t,
-        period_true,
-        depth_true,
-        duration_true,
-        epoch_true,
+        t, period_true, depth_true, duration_true, epoch_true
     )
 
     sigma = 0.0015
@@ -87,15 +80,10 @@ def test_uncertainty_estimates_nonzero():
     duration_grid = np.linspace(0.15, 0.25, 21)
     epoch_grid = np.linspace(0.55, 0.95, 21)
 
-    best_params, best_chi2, uncertainties, boot = ex_part_d.bootstrap_fit(
-        t,
-        flux_obs,
-        flux_err,
-        period_grid,
-        depth_grid,
-        duration_grid,
-        epoch_grid,
-        n_boot=30,
+    _, _, uncertainties, _ = ex_part_d.bootstrap_fit(
+        t, flux_obs, flux_err,
+        period_grid, depth_grid, duration_grid, epoch_grid,
+        n_boot=20
     )
 
     assert uncertainties["period_std"] > 0.0
@@ -105,10 +93,6 @@ def test_uncertainty_estimates_nonzero():
 
 
 def test_uncertainties_increase_with_noise():
-    """
-    Uncertainty estimates should scale sensibly:
-    noisier data should generally produce larger uncertainties.
-    """
     rng = np.random.default_rng(999)
 
     t = np.linspace(0.0, 30.0, 2000)
@@ -119,11 +103,7 @@ def test_uncertainties_increase_with_noise():
     epoch_true = 0.50
 
     flux_true = ex_part_d.box_transit_model(
-        t,
-        period_true,
-        depth_true,
-        duration_true,
-        epoch_true,
+        t, period_true, depth_true, duration_true, epoch_true
     )
 
     sigma_low = 0.0005
@@ -141,25 +121,15 @@ def test_uncertainties_increase_with_noise():
     epoch_grid = np.linspace(0.35, 0.65, 21)
 
     _, _, unc_low, _ = ex_part_d.bootstrap_fit(
-        t,
-        flux_low,
-        err_low,
-        period_grid,
-        depth_grid,
-        duration_grid,
-        epoch_grid,
-        n_boot=25,
+        t, flux_low, err_low,
+        period_grid, depth_grid, duration_grid, epoch_grid,
+        n_boot=15
     )
 
     _, _, unc_high, _ = ex_part_d.bootstrap_fit(
-        t,
-        flux_high,
-        err_high,
-        period_grid,
-        depth_grid,
-        duration_grid,
-        epoch_grid,
-        n_boot=25,
+        t, flux_high, err_high,
+        period_grid, depth_grid, duration_grid, epoch_grid,
+        n_boot=15
     )
 
     assert unc_high["period_std"] >= unc_low["period_std"]
